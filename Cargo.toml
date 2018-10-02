@@ -1,0 +1,16 @@
+[package]
+name = "cargo-docserve"
+version = "0.1.0"
+authors = ["Richard Dodd <richard.o.dodd@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+hyper = "*"
+failure = "*"
+structopt = "*"
+log = "*"
+pretty_env_logger = "*"
+cargo_metadata = "*"
+hyper-staticfile = "*"
+futures = "*"
+http = "*"
