@@ -1,76 +1,98 @@
-use hyper::{Body, Server};
-use http::{Request, Response, StatusCode, header, response::Builder as ResponseBuilder};
 use failure::{Compat, Error, ResultExt};
-use structopt::StructOpt;
-use std::process::{Stdio, Command};
-use std::path::{PathBuf, Path};
-use log::LevelFilter;
+use futures::{future, Async, Future, Poll};
+use http::{header, response::Builder as ResponseBuilder, Request, Response, StatusCode};
+use hyper::{Body, Server};
 use hyper_staticfile::{Static, StaticFuture};
-use futures::{Async, Future, Poll, future};
-use std::sync::Arc;
+use log::LevelFilter;
+use notify::{watcher, RecursiveMode, Watcher};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::channel;
+use std::sync::Arc;
 use std::time::Duration;
-use notify::{Watcher, RecursiveMode, watcher};
+use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
 struct Cli {
     #[structopt(short = "p", long = "port", default_value = "8000")]
     port: u16,
-    #[structopt(short = "w", long = "watch")]
-    watch: bool,
+    #[structopt(short = "w", long = "no-watch")]
+    no_watch: bool,
     cargo_args: Vec<String>,
 }
 
 fn main() -> Result<(), Error> {
-    pretty_env_logger::formatted_builder().unwrap()
+    pretty_env_logger::formatted_builder()
+        .unwrap()
         .filter(None, LevelFilter::Info)
         .init();
-    let opts = Arc::new(Cli::from_args());
-    log::debug!("{:?}", opts);
+    let opts = Cli::from_args();
+    log::debug!("Args: {:?}", opts);
+    // We need to skip an extra argument when it's called as "cargo docserve"
+    let cargo_args = opts
+        .cargo_args
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, val)| {
+            if idx == 0 && val == "docserve" {
+                None
+            } else {
+                Some(val.clone())
+            }
+        }).collect::<Vec<_>>();
+    let cargo_args = Arc::new(cargo_args);
 
-    let metadata = Arc::new(cargo_metadata::metadata_run(None, false, None)
-        .map_err(failure::SyncFailure::new)
-        .context("getting package metadata")?);
-    //log::debug!("Metadata: {:#?}", &metadata);
+    let metadata = Arc::new(
+        cargo_metadata::metadata_run(None, false, None)
+            .map_err(failure::SyncFailure::new)
+            .context("getting package metadata")?,
+    );
+    log::debug!("Metadata: {:?}", &metadata);
     let doc_dir = Path::new(&metadata.target_directory).join("doc");
     log::debug!("Doc dir: {}", doc_dir.display());
-    let package = &metadata.packages.get(0)
+    let package = &metadata
+        .packages
+        .get(0)
         .ok_or(failure::err_msg("crate must have at least 1 package"))?
         .name;
     let index = format!("{}/index.html", package.replace('-', "_"));
-    run_cargo(opts.clone())?;
+    run_cargo(cargo_args.clone())?;
 
-    let addr = ([127, 0, 0, 1],  opts.port).into();
+    let addr = ([127, 0, 0, 1], opts.port).into();
 
-    let watcher_joinguard = std::thread::spawn(move || -> Result<(), Error> {
-        let metadata = metadata.clone();
-        let (tx, rx) = channel();
-        let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
-        watcher.watch(format!("{}/src", metadata.workspace_root),
-                      RecursiveMode::Recursive).unwrap();
-        loop {
-            use notify::DebouncedEvent::*;
-            match rx.recv() {
-                Ok(Create(..)) | Ok(Write(..)) | Ok(Remove(..)) | Ok(Rename(..)) => {
-                    if let Err(e) = run_cargo(opts.clone()) {
-                        log::error!("{}", e);
+    if !opts.no_watch {
+        std::thread::spawn(move || -> Result<(), Error> {
+            let metadata = metadata.clone();
+            let (tx, rx) = channel();
+            let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
+            watcher
+                .watch(
+                    format!("{}/src", metadata.workspace_root),
+                    RecursiveMode::Recursive,
+                ).unwrap();
+            loop {
+                use notify::DebouncedEvent::*;
+                match rx.recv() {
+                    Ok(Create(..)) | Ok(Write(..)) | Ok(Remove(..)) | Ok(Rename(..)) => {
+                        if let Err(e) = run_cargo(cargo_args.clone()) {
+                            log::error!("{}", e);
+                        }
                     }
-                },
-                Ok(Error(e, ..)) => log::error!("{}", e),
-                Err(e) => log::error!("{}", e),
-                _ => (),
+                    Ok(Error(e, ..)) => log::error!("{}", e),
+                    Err(e) => log::error!("{}", e),
+                    _ => (),
+                }
             }
-        }
-    });
+        });
+    }
 
     let server = Server::bind(&addr)
-        .serve(move || future::ok::<_, Compat<Error>>(
-                DocService::new(doc_dir.clone(), index.clone())))
-        .map_err(|e| eprintln!("server errror: {}", e));
+        .serve(move || {
+            future::ok::<_, Compat<Error>>(DocService::new(doc_dir.clone(), index.clone()))
+        }).map_err(|e| eprintln!("server errror: {}", e));
 
     log::info!("Server running on {}", addr);
     hyper::rt::run(server);
-    watcher_joinguard.join().unwrap().unwrap();
     Ok(())
 }
 
@@ -92,9 +114,10 @@ impl Future for RoutesFuture {
                     .body(Body::empty())
                     .map_err(|e| Error::compat(e.into()))?;
                 Ok(Async::Ready(res))
-            },
-            RoutesFuture::Docs(ref mut future) => future.poll()
-                .map_err(|e| Error::compat(e.into()))
+            }
+            RoutesFuture::Docs(ref mut future) => {
+                future.poll().map_err(|e| Error::compat(e.into()))
+            }
         }
     }
 }
@@ -130,10 +153,10 @@ impl hyper::service::Service for DocService {
     }
 }
 
-fn run_cargo(opts: Arc<Cli>) -> Result<(), Error> {
+fn run_cargo(cargo_args: impl AsRef<Vec<String>>) -> Result<(), Error> {
     let mut cmd = Command::new("cargo");
     cmd.arg("doc")
-        .args(&opts.cargo_args)
+        .args(cargo_args.as_ref())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     log::debug!("running `{:?}`", cmd);
@@ -141,6 +164,9 @@ fn run_cargo(opts: Arc<Cli>) -> Result<(), Error> {
     if status.success() {
         Ok(())
     } else {
-        Err(failure::format_err!("cargo doc failed with error code {:?}", status.code()))
+        Err(failure::format_err!(
+            "cargo doc failed with error code {:?}",
+            status.code()
+        ))
     }
 }
