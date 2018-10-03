@@ -3,7 +3,7 @@ To use this do
 ```
 $ git clone https://github.com/derekdreery/cargo-docserve
 $ pushd cargo-docserve
-$ cargo install
+$ cargo install --path .
 $ popd
 ```
 
@@ -17,5 +17,5 @@ If you want to install a newer version do (from the docserve source)
 
 ```
 $ git pull
-$ cargo install --force
+$ cargo install --force --path .
 ```

@@ -65,11 +65,32 @@ fn main() -> Result<(), Error> {
             let metadata = metadata.clone();
             let (tx, rx) = channel();
             let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
-            watcher
-                .watch(
-                    format!("{}/src", metadata.workspace_root),
-                    RecursiveMode::Recursive,
-                ).unwrap();
+            if let Err(e) = watcher.watch(
+                format!("{}/src", metadata.workspace_root),
+                RecursiveMode::Recursive,
+            ) {
+                log::warn!("Cannot watch \"{}/src\": {}", metadata.workspace_root, e);
+            }
+            if let Err(e) = watcher.watch(
+                format!("{}/build.rs", metadata.workspace_root),
+                RecursiveMode::Recursive,
+            ) {
+                log::warn!(
+                    "Cannot watch \"{}/build.rs\": {}",
+                    metadata.workspace_root,
+                    e
+                );
+            }
+            if let Err(e) = watcher.watch(
+                format!("{}/Cargo.toml", metadata.workspace_root),
+                RecursiveMode::Recursive,
+            ) {
+                log::warn!(
+                    "Cannot watch \"{}/Cargo.toml\": {}",
+                    metadata.workspace_root,
+                    e
+                );
+            }
             loop {
                 use notify::DebouncedEvent::*;
                 match rx.recv() {
