@@ -14,3 +14,5 @@ cargo_metadata = "*"
 hyper-staticfile = "*"
 futures = "*"
 http = "*"
+notify = "*"
+

@@ -1,15 +1,16 @@
 use hyper::{Body, Server};
-use hyper::service::service_fn_ok;
 use http::{Request, Response, StatusCode, header, response::Builder as ResponseBuilder};
 use failure::{Compat, Error, ResultExt};
 use structopt::StructOpt;
 use std::process::{Stdio, Command};
-use std::path::Path;
+use std::path::{PathBuf, Path};
 use log::LevelFilter;
 use hyper_staticfile::{Static, StaticFuture};
 use futures::{Async, Future, Poll, future};
-
-const PHRASE: &str = "Hello, world";
+use std::sync::Arc;
+use std::sync::mpsc::channel;
+use std::time::Duration;
+use notify::{Watcher, RecursiveMode, watcher};
 
 #[derive(StructOpt, Debug)]
 struct Cli {
@@ -20,40 +21,61 @@ struct Cli {
     cargo_args: Vec<String>,
 }
 
-fn hello_world(_: Request<Body>) -> Response<Body> {
-    Response::new(Body::from(PHRASE))
-}
-
 fn main() -> Result<(), Error> {
     pretty_env_logger::formatted_builder().unwrap()
-        .filter(None, LevelFilter::Debug)
+        .filter(None, LevelFilter::Info)
         .init();
-    let opts = Cli::from_args();
+    let opts = Arc::new(Cli::from_args());
     log::debug!("{:?}", opts);
 
-    let metadata = cargo_metadata::metadata_run(None, false, None)
+    let metadata = Arc::new(cargo_metadata::metadata_run(None, false, None)
         .map_err(failure::SyncFailure::new)
-        .context("getting package metadata")?;
+        .context("getting package metadata")?);
+    //log::debug!("Metadata: {:#?}", &metadata);
     let doc_dir = Path::new(&metadata.target_directory).join("doc");
     log::debug!("Doc dir: {}", doc_dir.display());
-    run_cargo(&opts)?;
+    let package = &metadata.packages.get(0)
+        .ok_or(failure::err_msg("crate must have at least 1 package"))?
+        .name;
+    let index = format!("{}/index.html", package.replace('-', "_"));
+    run_cargo(opts.clone())?;
 
     let addr = ([127, 0, 0, 1],  opts.port).into();
 
-    let new_svc = || {
-        service_fn_ok(hello_world)
-    };
+    let watcher_joinguard = std::thread::spawn(move || -> Result<(), Error> {
+        let metadata = metadata.clone();
+        let (tx, rx) = channel();
+        let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
+        watcher.watch(format!("{}/src", metadata.workspace_root),
+                      RecursiveMode::Recursive).unwrap();
+        loop {
+            use notify::DebouncedEvent::*;
+            match rx.recv() {
+                Ok(Create(..)) | Ok(Write(..)) | Ok(Remove(..)) | Ok(Rename(..)) => {
+                    if let Err(e) = run_cargo(opts.clone()) {
+                        log::error!("{}", e);
+                    }
+                },
+                Ok(Error(e, ..)) => log::error!("{}", e),
+                Err(e) => log::error!("{}", e),
+                _ => (),
+            }
+        }
+    });
 
     let server = Server::bind(&addr)
-        .serve(new_svc)
+        .serve(move || future::ok::<_, Compat<Error>>(
+                DocService::new(doc_dir.clone(), index.clone())))
         .map_err(|e| eprintln!("server errror: {}", e));
 
+    log::info!("Server running on {}", addr);
     hyper::rt::run(server);
+    watcher_joinguard.join().unwrap().unwrap();
     Ok(())
 }
 
 enum RoutesFuture {
-    Root,
+    Root(Arc<String>),
     Docs(StaticFuture<Body>),
 }
 
@@ -63,10 +85,10 @@ impl Future for RoutesFuture {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match *self {
-            RoutesFuture::Root => {
+            RoutesFuture::Root(ref index) => {
                 let res = ResponseBuilder::new()
                     .status(StatusCode::SEE_OTHER)
-                    .header(header::LOCATION, "package/index.html")
+                    .header(header::LOCATION, AsRef::as_ref(index).as_str())
                     .body(Body::empty())
                     .map_err(|e| Error::compat(e.into()))?;
                 Ok(Async::Ready(res))
@@ -79,7 +101,17 @@ impl Future for RoutesFuture {
 
 /// The object serving the docs.
 struct DocService {
-    static_: Static
+    static_: Static,
+    redirect: Arc<String>,
+}
+
+impl DocService {
+    pub fn new(doc_path: impl Into<PathBuf>, start_page: impl Into<String>) -> Self {
+        Self {
+            static_: Static::new(doc_path),
+            redirect: Arc::new(start_page.into()),
+        }
+    }
 }
 
 impl hyper::service::Service for DocService {
@@ -91,14 +123,14 @@ impl hyper::service::Service for DocService {
     fn call(&mut self, req: Request<Self::ReqBody>) -> Self::Future {
         // Redirect root requests
         if req.uri().path() == "/" {
-            RoutesFuture::Root
+            RoutesFuture::Root(self.redirect.clone())
         } else {
             RoutesFuture::Docs(self.static_.serve(req))
         }
     }
 }
 
-fn run_cargo(opts: &Cli) -> Result<(), Error> {
+fn run_cargo(opts: Arc<Cli>) -> Result<(), Error> {
     let mut cmd = Command::new("cargo");
     cmd.arg("doc")
         .args(&opts.cargo_args)
@@ -112,4 +144,3 @@ fn run_cargo(opts: &Cli) -> Result<(), Error> {
         Err(failure::format_err!("cargo doc failed with error code {:?}", status.code()))
     }
 }
-
