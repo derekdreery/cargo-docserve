@@ -14,10 +14,16 @@ use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
 struct Cli {
+    /// Which port should the documentation be served on
     #[structopt(short = "p", long = "port", default_value = "8000")]
     port: u16,
+    /// Set this if you want to turn watching the source off
     #[structopt(short = "w", long = "no-watch")]
     no_watch: bool,
+    /// Should the docs be available on all interfaces (set), or just localhost (unset)
+    #[structopt(long = "public")]
+    public: bool,
+    /// Arguments to pass to `cargo doc`
     cargo_args: Vec<String>,
 }
 
@@ -58,7 +64,12 @@ fn main() -> Result<(), Error> {
     let index = format!("{}/index.html", package.replace('-', "_"));
     run_cargo(cargo_args.clone())?;
 
-    let addr = ([127, 0, 0, 1], opts.port).into();
+    let host = if opts.public {
+        [0, 0, 0, 0]
+    } else {
+        [127, 0, 0, 1]
+    };
+    let addr = (host, opts.port).into();
 
     if !opts.no_watch {
         std::thread::spawn(move || -> Result<(), Error> {
