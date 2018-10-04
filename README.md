@@ -1,3 +1,6 @@
+> **NOTE** This currently uses the `beta` compiler so it can use the 2018 edition. I won't push it
+> to crates.io until 2018 stabilizes.
+
 To use this do
 
 ```

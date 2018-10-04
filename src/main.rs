@@ -18,12 +18,16 @@ struct Cli {
     #[structopt(short = "p", long = "port", default_value = "8000")]
     port: u16,
     /// Set this if you want to turn watching the source off
-    #[structopt(short = "w", long = "no-watch")]
+    #[structopt(short = "n", long = "do-not-watch")]
     no_watch: bool,
-    /// Should the docs be available on all interfaces (set), or just localhost (unset)
-    #[structopt(long = "public")]
+    /// Add an extra file or directory to be watched
+    #[structopt(long = "watch-extra", name="FILE")]
+    watch_extra: Vec<String>,
+    /// Listen on all interfaces, not just localhost
+    #[structopt(short = "P",long = "public")]
     public: bool,
-    /// Arguments to pass to `cargo doc`
+    /// Arguments to pass to `cargo doc`. Pass flags after a `--`
+    #[structopt(name = "ARG")]
     cargo_args: Vec<String>,
 }
 
@@ -53,7 +57,7 @@ fn main() -> Result<(), Error> {
             .map_err(failure::SyncFailure::new)
             .context("getting package metadata")?,
     );
-    log::debug!("Metadata: {:?}", &metadata);
+    log::debug!("Metadata: {:#?}", &metadata);
     let doc_dir = Path::new(&metadata.target_directory).join("doc");
     log::debug!("Doc dir: {}", doc_dir.display());
     let package = &metadata
@@ -76,36 +80,31 @@ fn main() -> Result<(), Error> {
             let metadata = metadata.clone();
             let (tx, rx) = channel();
             let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
-            if let Err(e) = watcher.watch(
-                format!("{}/src", metadata.workspace_root),
-                RecursiveMode::Recursive,
-            ) {
-                log::warn!("Cannot watch \"{}/src\": {}", metadata.workspace_root, e);
+            // TODO probably more efficient to not watch `target`, rather than ignore it.
+            if let Err(e) = watcher.watch(&metadata.workspace_root, RecursiveMode::Recursive) {
+                log::error!("Cannot watch \"{}\": {}", metadata.workspace_root, e);
             }
-            if let Err(e) = watcher.watch(
-                format!("{}/build.rs", metadata.workspace_root),
-                RecursiveMode::Recursive,
-            ) {
-                log::warn!(
-                    "Cannot watch \"{}/build.rs\": {}",
-                    metadata.workspace_root,
-                    e
-                );
-            }
-            if let Err(e) = watcher.watch(
-                format!("{}/Cargo.toml", metadata.workspace_root),
-                RecursiveMode::Recursive,
-            ) {
-                log::warn!(
-                    "Cannot watch \"{}/Cargo.toml\": {}",
-                    metadata.workspace_root,
-                    e
-                );
+            for extra in opts.watch_extra.iter() {
+                if let Err(e) = watcher.watch(extra, RecursiveMode::Recursive) {
+                    log::error!("Cannot watch \"{}\": {}", extra, e);
+                }
             }
             loop {
                 use notify::DebouncedEvent::*;
                 match rx.recv() {
-                    Ok(Create(..)) | Ok(Write(..)) | Ok(Remove(..)) | Ok(Rename(..)) => {
+                    Ok(Create(path)) | Ok(Write(path)) | Ok(Remove(path)) => {
+                        if path.starts_with(&metadata.target_directory) {
+                            // Don't rebuild on change in target or else we get into an infinite
+                            // loop.
+                            continue;
+                        }
+                        log::debug!("path {} changed, rebuilding", path.display());
+                        if let Err(e) = run_cargo(cargo_args.clone()) {
+                            log::error!("{}", e);
+                        }
+                    }
+                    Ok(Rename(..)) => {
+                        // FIXME check if we should look at whether we are in /target/
                         if let Err(e) = run_cargo(cargo_args.clone()) {
                             log::error!("{}", e);
                         }
