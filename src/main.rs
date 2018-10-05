@@ -20,6 +20,9 @@ struct Cli {
     /// Set this if you want to turn watching the source off
     #[structopt(short = "n", long = "do-not-watch")]
     no_watch: bool,
+    /// Path to the cargo manifest at the root of the project (Cargo.toml)
+    #[structopt(name = "FILE", short = "m", long = "manifest")]
+    manifest: Option<String>,
     /// Add an extra file or directory to be watched
     #[structopt(long = "watch-extra", name="FILE")]
     watch_extra: Vec<String>,
@@ -53,7 +56,7 @@ fn main() -> Result<(), Error> {
     let cargo_args = Arc::new(cargo_args);
 
     let metadata = Arc::new(
-        cargo_metadata::metadata_run(None, false, None)
+        cargo_metadata::metadata_run(opts.manifest.as_ref().map(Path::new), false, None)
             .map_err(failure::SyncFailure::new)
             .context("getting package metadata")?,
     );
@@ -66,7 +69,7 @@ fn main() -> Result<(), Error> {
         .ok_or(failure::err_msg("crate must have at least 1 package"))?
         .name;
     let index = format!("{}/index.html", package.replace('-', "_"));
-    run_cargo(cargo_args.clone())?;
+    run_cargo(cargo_args.clone(), opts.manifest.as_ref().map(String::as_str))?;
 
     let host = if opts.public {
         [0, 0, 0, 0]
@@ -99,13 +102,15 @@ fn main() -> Result<(), Error> {
                             continue;
                         }
                         log::debug!("path {} changed, rebuilding", path.display());
-                        if let Err(e) = run_cargo(cargo_args.clone()) {
+                        if let Err(e) = run_cargo(cargo_args.clone(),
+                                                  opts.manifest.as_ref().map(String::as_str)) {
                             log::error!("{}", e);
                         }
                     }
                     Ok(Rename(..)) => {
                         // FIXME check if we should look at whether we are in /target/
-                        if let Err(e) = run_cargo(cargo_args.clone()) {
+                        if let Err(e) = run_cargo(cargo_args.clone(),
+                                                  opts.manifest.as_ref().map(String::as_str)) {
                             log::error!("{}", e);
                         }
                     }
@@ -184,10 +189,13 @@ impl hyper::service::Service for DocService {
     }
 }
 
-fn run_cargo(cargo_args: impl AsRef<Vec<String>>) -> Result<(), Error> {
+fn run_cargo(cargo_args: impl AsRef<Vec<String>>, manifest: Option<&str>) -> Result<(), Error> {
     let mut cmd = Command::new("cargo");
-    cmd.arg("doc")
-        .args(cargo_args.as_ref())
+    cmd.arg("doc");
+    if let Some(m) = manifest {
+        cmd.args(&["--manifest-path", m]);
+    }
+    cmd.args(cargo_args.as_ref())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     log::debug!("running `{:?}`", cmd);
