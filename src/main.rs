@@ -21,7 +21,7 @@ struct Cli {
     #[structopt(short = "n", long = "do-not-watch")]
     no_watch: bool,
     /// Path to the cargo manifest at the root of the project (Cargo.toml)
-    #[structopt(name = "FILE", short = "m", long = "manifest")]
+    #[structopt(name = "MANIFEST", short = "m", long = "manifest")]
     manifest: Option<String>,
     /// Add an extra file or directory to be watched
     #[structopt(long = "watch-extra", name="FILE")]
