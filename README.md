@@ -4,7 +4,7 @@
 To use this do
 
 ```
-$ cargo install --git https://github.com/derekdreery/cargo-docserve
+$ cargo +beta install --git https://github.com/derekdreery/cargo-docserve
 ```
 
 And then from your project somewhere
@@ -16,5 +16,5 @@ $ cargo docserve
 If you want to install a newer version do (notice the `--force`):
 
 ```
-$ cargo install --force --git https://github.com/derekdreery/cargo-docserve
+$ cargo +beta install --force --git https://github.com/derekdreery/cargo-docserve
 ```
