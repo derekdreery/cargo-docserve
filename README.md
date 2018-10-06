@@ -4,10 +4,7 @@
 To use this do
 
 ```
-$ git clone https://github.com/derekdreery/cargo-docserve
-$ pushd cargo-docserve
-$ cargo install --path .
-$ popd
+$ cargo install --git https://github.com/derekdreery/cargo-docserve
 ```
 
 And then from your project somewhere
@@ -16,9 +13,8 @@ And then from your project somewhere
 $ cargo docserve
 ```
 
-If you want to install a newer version do (from the docserve source)
+If you want to install a newer version do (notice the `--force`):
 
 ```
-$ git pull
-$ cargo install --force --path .
+$ cargo install --force --git https://github.com/derekdreery/cargo-docserve
 ```
