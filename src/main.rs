@@ -24,10 +24,10 @@ struct Cli {
     #[structopt(name = "MANIFEST", short = "m", long = "manifest")]
     manifest: Option<String>,
     /// Add an extra file or directory to be watched
-    #[structopt(long = "watch-extra", name="FILE")]
+    #[structopt(long = "watch-extra", name = "FILE")]
     watch_extra: Vec<String>,
     /// Listen on all interfaces, not just localhost
-    #[structopt(short = "P",long = "public")]
+    #[structopt(short = "P", long = "public")]
     public: bool,
     /// Arguments to pass to `cargo doc`. Pass flags after a `--`
     #[structopt(name = "ARG")]
@@ -52,7 +52,8 @@ fn main() -> Result<(), Error> {
             } else {
                 Some(val.clone())
             }
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
     let cargo_args = Arc::new(cargo_args);
 
     let metadata = Arc::new(
@@ -69,7 +70,10 @@ fn main() -> Result<(), Error> {
         .ok_or(failure::err_msg("crate must have at least 1 package"))?
         .name;
     let index = format!("{}/index.html", package.replace('-', "_"));
-    run_cargo(cargo_args.clone(), opts.manifest.as_ref().map(String::as_str))?;
+    run_cargo(
+        cargo_args.clone(),
+        opts.manifest.as_ref().map(String::as_str),
+    )?;
 
     let host = if opts.public {
         [0, 0, 0, 0]
@@ -102,15 +106,19 @@ fn main() -> Result<(), Error> {
                             continue;
                         }
                         log::debug!("path {} changed, rebuilding", path.display());
-                        if let Err(e) = run_cargo(cargo_args.clone(),
-                                                  opts.manifest.as_ref().map(String::as_str)) {
+                        if let Err(e) = run_cargo(
+                            cargo_args.clone(),
+                            opts.manifest.as_ref().map(String::as_str),
+                        ) {
                             log::error!("{}", e);
                         }
                     }
                     Ok(Rename(..)) => {
                         // FIXME check if we should look at whether we are in /target/
-                        if let Err(e) = run_cargo(cargo_args.clone(),
-                                                  opts.manifest.as_ref().map(String::as_str)) {
+                        if let Err(e) = run_cargo(
+                            cargo_args.clone(),
+                            opts.manifest.as_ref().map(String::as_str),
+                        ) {
                             log::error!("{}", e);
                         }
                     }
@@ -125,7 +133,8 @@ fn main() -> Result<(), Error> {
     let server = Server::bind(&addr)
         .serve(move || {
             future::ok::<_, Compat<Error>>(DocService::new(doc_dir.clone(), index.clone()))
-        }).map_err(|e| eprintln!("server errror: {}", e));
+        })
+        .map_err(|e| eprintln!("server errror: {}", e));
 
     log::info!("Server running on {}", addr);
     hyper::rt::run(server);
