@@ -5,14 +5,13 @@ authors = ["Richard Dodd <richard.o.dodd@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-hyper = "*"
-failure = "*"
-structopt = "*"
-log = "*"
-pretty_env_logger = "*"
-cargo_metadata = "*"
-hyper-staticfile = "*"
-futures = "*"
-http = "*"
-notify = "*"
+structopt = "0.3"
+cargo_metadata = "0.14"
+notify = "5.0.0-pre.11"
+hyper = { version = "0.14.11", features = ["full", "runtime"] }
+tokio = "1.10.0"
+anyhow = "1.0.43"
+qu = "0.2.1"
+crossbeam-channel = "0.5.1"
+hyper-staticfile = "0.6.0"
 

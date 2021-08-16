@@ -1,162 +1,192 @@
-use failure::{Compat, Error, ResultExt};
-use futures::{future, Async, Future, Poll};
-use http::{header, response::Builder as ResponseBuilder, Request, Response, StatusCode};
-use hyper::{Body, Server};
-use hyper_staticfile::{Static, StaticFuture};
-use log::LevelFilter;
-use notify::{watcher, RecursiveMode, Watcher};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc::channel;
-use std::sync::Arc;
-use std::time::Duration;
+// TODO use `camino` for paths
+use anyhow::Error;
+use cargo_metadata::Metadata;
+use hyper::{
+    header::{self, HeaderValue},
+    service::{make_service_fn, service_fn},
+    Body, Method, Request, Response, Server, StatusCode,
+};
+use hyper_staticfile::Static;
+use qu::ick_use::*;
+use std::{
+    convert::{Infallible, TryFrom, TryInto},
+    net::SocketAddr,
+    path::Path,
+    sync::Arc,
+};
 use structopt::StructOpt;
 
+mod cargo_doc;
+
+pub type Result<T = (), E = anyhow::Error> = std::result::Result<T, E>;
+
 #[derive(StructOpt, Debug)]
-struct Cli {
+struct Opt {
     /// Which port should the documentation be served on
-    #[structopt(short = "p", long = "port", default_value = "8000")]
+    #[structopt(short = "p", long, default_value = "8000")]
     port: u16,
-    /// Set this if you want to turn watching the source off
-    #[structopt(short = "n", long = "do-not-watch")]
-    no_watch: bool,
+    /// Set this if you want to turn watching the source on
+    #[structopt(short = "w", long)]
+    watch: bool,
     /// Path to the cargo manifest at the root of the project (Cargo.toml)
-    #[structopt(name = "MANIFEST", short = "m", long = "manifest")]
+    #[structopt(name = "MANIFEST", short = "m", long)]
     manifest: Option<String>,
     /// Add an extra file or directory to be watched
-    #[structopt(long = "watch-extra", name="FILE")]
+    #[structopt(long = "watch-extra", name = "FILE")]
     watch_extra: Vec<String>,
     /// Listen on all interfaces, not just localhost
-    #[structopt(short = "P",long = "public")]
+    #[structopt(short = "P", long)]
     public: bool,
     /// Arguments to pass to `cargo doc`. Pass flags after a `--`
     #[structopt(name = "ARG")]
     cargo_args: Vec<String>,
 }
 
-fn main() -> Result<(), Error> {
-    pretty_env_logger::formatted_builder()
-        .unwrap()
-        .filter(None, LevelFilter::Info)
-        .init();
-    let opts = Cli::from_args();
-    log::debug!("Args: {:?}", opts);
-    // We need to skip an extra argument when it's called as "cargo docserve"
-    let cargo_args = opts
-        .cargo_args
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, val)| {
-            if idx == 0 && val == "docserve" {
-                None
-            } else {
-                Some(val.clone())
-            }
-        }).collect::<Vec<_>>();
-    let cargo_args = Arc::new(cargo_args);
-
-    let metadata = Arc::new(
-        cargo_metadata::metadata_run(opts.manifest.as_ref().map(Path::new), false, None)
-            .map_err(failure::SyncFailure::new)
-            .context("getting package metadata")?,
-    );
-    log::debug!("Metadata: {:#?}", &metadata);
-    let doc_dir = Path::new(&metadata.target_directory).join("doc");
-    log::debug!("Doc dir: {}", doc_dir.display());
-    let package = &metadata
-        .packages
-        .get(0)
-        .ok_or(failure::err_msg("crate must have at least 1 package"))?
-        .name;
-    let index = format!("{}/index.html", package.replace('-', "_"));
-    run_cargo(cargo_args.clone(), opts.manifest.as_ref().map(String::as_str))?;
-
-    let host = if opts.public {
-        [0, 0, 0, 0]
-    } else {
-        [127, 0, 0, 1]
-    };
-    let addr = (host, opts.port).into();
-
-    if !opts.no_watch {
-        std::thread::spawn(move || -> Result<(), Error> {
-            let metadata = metadata.clone();
-            let (tx, rx) = channel();
-            let mut watcher = watcher(tx, Duration::from_secs(1)).unwrap();
-            // TODO probably more efficient to not watch `target`, rather than ignore it.
-            if let Err(e) = watcher.watch(&metadata.workspace_root, RecursiveMode::Recursive) {
-                log::error!("Cannot watch \"{}\": {}", metadata.workspace_root, e);
-            }
-            for extra in opts.watch_extra.iter() {
-                if let Err(e) = watcher.watch(extra, RecursiveMode::Recursive) {
-                    log::error!("Cannot watch \"{}\": {}", extra, e);
-                }
-            }
-            loop {
-                use notify::DebouncedEvent::*;
-                match rx.recv() {
-                    Ok(Create(path)) | Ok(Write(path)) | Ok(Remove(path)) => {
-                        if path.starts_with(&metadata.target_directory) {
-                            // Don't rebuild on change in target or else we get into an infinite
-                            // loop.
-                            continue;
-                        }
-                        log::debug!("path {} changed, rebuilding", path.display());
-                        if let Err(e) = run_cargo(cargo_args.clone(),
-                                                  opts.manifest.as_ref().map(String::as_str)) {
-                            log::error!("{}", e);
-                        }
-                    }
-                    Ok(Rename(..)) => {
-                        // FIXME check if we should look at whether we are in /target/
-                        if let Err(e) = run_cargo(cargo_args.clone(),
-                                                  opts.manifest.as_ref().map(String::as_str)) {
-                            log::error!("{}", e);
-                        }
-                    }
-                    Ok(Error(e, ..)) => log::error!("{}", e),
-                    Err(e) => log::error!("{}", e),
-                    _ => (),
-                }
-            }
-        });
+impl Opt {
+    fn metadata(&self) -> Result<Metadata> {
+        let mut cmd = cargo_metadata::MetadataCommand::new();
+        if let Some(path) = self.manifest() {
+            cmd.manifest_path(path);
+        }
+        cmd.exec().map_err(Into::into)
     }
 
-    let server = Server::bind(&addr)
-        .serve(move || {
-            future::ok::<_, Compat<Error>>(DocService::new(doc_dir.clone(), index.clone()))
-        }).map_err(|e| eprintln!("server errror: {}", e));
+    fn manifest(&self) -> Option<&Path> {
+        self.manifest.as_ref().map(Path::new)
+    }
+}
 
-    log::info!("Server running on {}", addr);
-    hyper::rt::run(server);
+/// Build this from arguments.
+#[derive(Debug)]
+struct Config {
+    /// The address to serve on.
+    address: SocketAddr,
+    /// If None, don't watch. If Some, watch the files listed as well as src.
+    watch: Option<Vec<String>>,
+    /// Arguments to pass to `cargo doc`
+    cargo_args: Vec<String>,
+    /// The location of the manifest if it was supplied.
+    manifest: Option<String>,
+    /// Cargo metadata.
+    metadata: Metadata,
+    /// Location of output of `cargo doc`
+    doc_dir: String,
+}
+
+impl TryFrom<Opt> for Config {
+    type Error = Error;
+    fn try_from(mut opt: Opt) -> Result<Self, Self::Error> {
+        let host = if opt.public {
+            [0, 0, 0, 0]
+        } else {
+            [127, 0, 0, 1]
+        };
+
+        // We need to skip an extra argument when it's called as "cargo docserve"
+        if matches!(opt.cargo_args.get(0).map(|s| s.as_str()), Some("docserve")) {
+            // Cannot panic because we just checked it exists.
+            opt.cargo_args.remove(0);
+        }
+
+        let metadata = opt.metadata()?;
+        let doc_dir = format!("{}/doc", metadata.target_directory);
+        Ok(Config {
+            address: (host, opt.port).into(),
+            watch: if opt.watch {
+                Some(opt.watch_extra.into_iter().map(Into::into).collect())
+            } else {
+                None
+            },
+            cargo_args: opt.cargo_args,
+            manifest: opt.manifest,
+            metadata,
+            doc_dir,
+        })
+    }
+}
+
+impl Config {
+    /// Where to open the browser at.
+    fn open_at(&self) -> Result<String> {
+        let name = self
+            .metadata
+            .root_package()
+            .or_else(|| self.metadata.packages.get(0))
+            .map(|pkg| pkg.name.replace('-', "_"))
+            .ok_or_else(|| format_err!("could not find any packages"))?;
+        Ok(format!("/{}/index.html", name))
+    }
+}
+
+#[qu::ick]
+fn main(opt: Opt) -> Result<(), Error> {
+    log::debug!("Args: {:?}", opt);
+    let config: Config = opt.try_into()?;
+    let config = Arc::new(config);
+    log::trace!("Config: {:?}", config);
+    log::debug!("Doc dir: {}", config.doc_dir);
+
+    cargo_doc::run(&config)?;
+
+    let shutdown = if config.watch.is_some() {
+        Some(cargo_doc::watch(config.clone())?)
+    } else {
+        None
+    };
+
+    // serve target/doc
+    log::info!("Running doc server on http://{}", config.address);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()?
+        .block_on(async move {
+            let address = config.address;
+            let make_service = make_service_fn(move |_conn| {
+                // clone for each connection
+                let config = config.clone();
+                async move {
+                    Ok::<_, Infallible>(service_fn(move |req: Request<Body>| {
+                        // clone for each request
+                        let config = config.clone();
+                        handle(config, req)
+                    }))
+                }
+            });
+            let server = Server::bind(&address).serve(make_service);
+
+            if let Err(e) = server.await {
+                log::error!("server errror: {}", e);
+            }
+        });
+
+    if let Some(shutdown) = shutdown {
+        shutdown();
+    }
     Ok(())
 }
 
+async fn handle(config: Arc<Config>, req: Request<Body>) -> Result<Response<Body>> {
+    if matches!((req.method(), req.uri().path()), (&Method::GET, "/")) {
+        // Redirect "/" to the docs for the root package.
+        let mut res = Response::new(Body::empty());
+        let redirect = config.open_at().unwrap();
+        *res.status_mut() = StatusCode::MOVED_PERMANENTLY;
+        res.headers_mut()
+            .insert(header::LOCATION, HeaderValue::from_str(&redirect).unwrap());
+        return Ok(res);
+    }
+    Static::new(config.doc_dir.clone())
+        .serve(req)
+        .await
+        .map_err(Into::into)
+}
+
+/*
 enum RoutesFuture {
     Root(Arc<String>),
     Docs(StaticFuture<Body>),
 }
 
-impl Future for RoutesFuture {
-    type Item = Response<Body>;
-    type Error = Compat<Error>;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match *self {
-            RoutesFuture::Root(ref index) => {
-                let res = ResponseBuilder::new()
-                    .status(StatusCode::SEE_OTHER)
-                    .header(header::LOCATION, AsRef::as_ref(index).as_str())
-                    .body(Body::empty())
-                    .map_err(|e| Error::compat(e.into()))?;
-                Ok(Async::Ready(res))
-            }
-            RoutesFuture::Docs(ref mut future) => {
-                future.poll().map_err(|e| Error::compat(e.into()))
-            }
-        }
-    }
-}
 
 /// The object serving the docs.
 struct DocService {
@@ -176,7 +206,7 @@ impl DocService {
 impl hyper::service::Service for DocService {
     type ReqBody = Body;
     type ResBody = Body;
-    type Error = Compat<Error>;
+    type Error = Error;
     type Future = RoutesFuture;
 
     fn call(&mut self, req: Request<Self::ReqBody>) -> Self::Future {
@@ -188,24 +218,4 @@ impl hyper::service::Service for DocService {
         }
     }
 }
-
-fn run_cargo(cargo_args: impl AsRef<Vec<String>>, manifest: Option<&str>) -> Result<(), Error> {
-    let mut cmd = Command::new("cargo");
-    cmd.arg("doc");
-    if let Some(m) = manifest {
-        cmd.args(&["--manifest-path", m]);
-    }
-    cmd.args(cargo_args.as_ref())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    log::debug!("running `{:?}`", cmd);
-    let status = cmd.status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(failure::format_err!(
-            "cargo doc failed with error code {:?}",
-            status.code()
-        ))
-    }
-}
+*/
