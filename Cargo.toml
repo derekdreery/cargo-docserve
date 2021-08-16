@@ -1,8 +1,11 @@
 [package]
 name = "cargo-docserve"
+description = "Run a webserver to serve your docs locally with `cargo docserve`. Optionally rebuild docs when source changes"
 version = "0.1.0"
 authors = ["Richard Dodd <richard.o.dodd@gmail.com>"]
 edition = "2018"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/derekdreery/cargo-docserve"
 
 [dependencies]
 structopt = "0.3"
