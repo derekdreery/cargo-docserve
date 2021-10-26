@@ -1,6 +1,6 @@
 [package]
-name = "cargo-docserve"
-description = "Run a webserver to serve your docs locally with `cargo docserve`. Optionally rebuild docs when source changes"
+name = "cargo-serve-docs"
+description = "Run a webserver to serve your docs locally with `cargo serve-docs`. Optionally rebuild docs when source changes"
 version = "0.1.0"
 authors = ["Richard Dodd <richard.o.dodd@gmail.com>"]
 edition = "2018"

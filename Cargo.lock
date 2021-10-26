@@ -65,7 +65,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-docserve"
+name = "cargo-platform"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbdb825da8a5df079a43676dbe042702f1707b1109f713a01420fbb4cc71fa27"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "cargo-serve-docs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -77,15 +86,6 @@ dependencies = [
  "qu",
  "structopt",
  "tokio",
-]
-
-[[package]]
-name = "cargo-platform"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbdb825da8a5df079a43676dbe042702f1707b1109f713a01420fbb4cc71fa27"
-dependencies = [
- "serde",
 ]
 
 [[package]]

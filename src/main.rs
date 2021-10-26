@@ -82,8 +82,8 @@ impl TryFrom<Opt> for Config {
             [127, 0, 0, 1]
         };
 
-        // We need to skip an extra argument when it's called as "cargo docserve"
-        if matches!(opt.cargo_args.get(0).map(|s| s.as_str()), Some("docserve")) {
+        // We need to skip an extra argument when it's called as "cargo serve-docs"
+        if matches!(opt.cargo_args.get(0).map(|s| s.as_str()), Some("serve-docs")) {
             // Cannot panic because we just checked it exists.
             opt.cargo_args.remove(0);
         }
